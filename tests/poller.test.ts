@@ -20,6 +20,9 @@ function makeMockClient(
     async fetchMessages(channelId: string): Promise<DiscordMessage[]> {
       return messagesByChannel[channelId] ?? [];
     },
+    async sendMessage() {
+      return { ok: true, status: 200, headers: new Headers(), body: {} };
+    },
   };
 }
 
@@ -67,6 +70,9 @@ describe("initialPoll", () => {
       async fetchMessages(): Promise<DiscordMessage[]> {
         throw new Error("Network error");
       },
+      async sendMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
     };
 
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
@@ -102,6 +108,9 @@ describe("initialPoll", () => {
             author: { id: "u-1", username: "user1" },
           },
         ];
+      },
+      async sendMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
       },
     };
 

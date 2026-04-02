@@ -1,5 +1,6 @@
 import { loadConfig } from "./config";
 import { createDiscordClient } from "./discord";
+import type { DiscordClient, DiscordMessage } from "./discord";
 import { createCache } from "./cache";
 import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger } from "./poller";
@@ -9,10 +10,16 @@ const startTime = Date.now();
 
 /**
  * Create the request handler with access to cache and config.
+ * When a DiscordClient is provided, write pass-through (POST) routes are enabled.
  */
-function createHandler(cache: Cache, guildId: string, cacheTtlMs?: number) {
+function createHandler(
+  cache: Cache,
+  guildId: string,
+  cacheTtlMs?: number,
+  client?: DiscordClient,
+) {
   const ttl = cacheTtlMs ?? Infinity;
-  return function handleRequest(req: Request): Response {
+  return async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
     // Health endpoint — includes cache stats
@@ -55,10 +62,12 @@ function createHandler(cache: Cache, guildId: string, cacheTtlMs?: number) {
       });
     }
 
-    // GET /api/v10/channels/{channelId}/messages
+    // Match /api/v10/channels/{channelId}/messages for both GET and POST
     const messagesMatch = url.pathname.match(
       /^\/api\/v10\/channels\/([^/]+)\/messages$/,
     );
+
+    // GET /api/v10/channels/{channelId}/messages
     if (req.method === "GET" && messagesMatch) {
       const channelId = messagesMatch[1];
 
@@ -103,6 +112,43 @@ function createHandler(cache: Cache, guildId: string, cacheTtlMs?: number) {
       });
     }
 
+    // POST /api/v10/channels/{channelId}/messages — write pass-through
+    if (req.method === "POST" && messagesMatch) {
+      if (!client) {
+        return Response.json(
+          { error: "Write pass-through is not configured (no Discord client)" },
+          { status: 503 },
+        );
+      }
+
+      const channelId = messagesMatch[1];
+      const contentType = req.headers.get("Content-Type") ?? "application/json";
+
+      // Read the raw body to forward transparently (supports JSON and multipart)
+      const rawBody = await req.arrayBuffer();
+
+      const result = await client.sendMessage(
+        channelId,
+        rawBody,
+        contentType,
+      );
+
+      // On success, inject the returned message into the cache
+      if (result.ok) {
+        const msg = result.body as DiscordMessage;
+        if (msg && typeof msg.id === "string" && /^\d+$/.test(msg.id)) {
+          try {
+            cache.setMessages(channelId, [msg]);
+          } catch {
+            // Cache write failure should not break the response
+          }
+        }
+      }
+
+      // Return Discord's response verbatim (status code + body)
+      return Response.json(result.body, { status: result.status });
+    }
+
     return Response.json({ error: "not found" }, { status: 404 });
   };
 }
@@ -124,7 +170,7 @@ if (import.meta.main) {
     logger,
   );
 
-  const handler = createHandler(cache, config.discordGuildId, config.cacheTtlMs);
+  const handler = createHandler(cache, config.discordGuildId, config.cacheTtlMs, client);
 
   const server = Bun.serve({
     port: config.port,

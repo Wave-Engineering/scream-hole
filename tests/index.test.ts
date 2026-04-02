@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createHandler, VERSION } from "../index";
 import { createCache } from "../cache";
-import type { DiscordChannel, DiscordMessage } from "../discord";
+import type {
+  DiscordChannel,
+  DiscordClient,
+  DiscordMessage,
+  SendMessageResponse,
+} from "../discord";
 
 /**
  * Helper: create a Discord snowflake ID from a timestamp.
@@ -40,7 +45,7 @@ describe("GET /health", () => {
     const cache = createCache(TEST_TTL, TEST_WINDOW);
     const handler = createHandler(cache, "guild-1");
     const req = new Request("http://localhost/health", { method: "GET" });
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(200);
 
@@ -71,7 +76,7 @@ describe("GET /api/v10/guilds/{guildId}/channels", () => {
     const req = new Request(
       "http://localhost/api/v10/guilds/guild-1/channels",
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Cache")).toBe("HIT");
@@ -89,7 +94,7 @@ describe("GET /api/v10/guilds/{guildId}/channels", () => {
     const req = new Request(
       "http://localhost/api/v10/guilds/unknown-guild/channels",
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(404);
   });
@@ -104,7 +109,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       "http://localhost/api/v10/channels/ch-1/messages",
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -118,7 +123,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       "http://localhost/api/v10/channels/ch-1/messages?after=abc",
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -137,7 +142,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       `http://localhost/api/v10/channels/ch-1/messages?after=${afterId}&limit=abc`,
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -165,7 +170,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       `http://localhost/api/v10/channels/ch-1/messages?after=${id1}`,
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Cache")).toBe("HIT");
@@ -194,7 +199,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       `http://localhost/api/v10/channels/ch-1/messages?after=${oldId}`,
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -208,7 +213,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       "http://localhost/api/v10/channels/unknown-ch/messages?after=100",
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(404);
   });
@@ -234,7 +239,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const req = new Request(
       `http://localhost/api/v10/channels/ch-1/messages?after=${afterId}&limit=2`,
     );
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as DiscordMessage[];
@@ -245,12 +250,209 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
   });
 });
 
+describe("POST /api/v10/channels/{channelId}/messages", () => {
+  /**
+   * Helper: build a mock DiscordClient with a controllable sendMessage.
+   */
+  function mockClient(
+    sendResponse: SendMessageResponse,
+  ): DiscordClient & { captured: { channelId: string; body: string; contentType: string } } {
+    const captured = { channelId: "", body: "", contentType: "" };
+    return {
+      captured,
+      async fetchChannels() {
+        return [];
+      },
+      async fetchMessages() {
+        return [];
+      },
+      async sendMessage(channelId, body, contentType) {
+        captured.channelId = channelId;
+        if (body instanceof ArrayBuffer) {
+          captured.body = new TextDecoder().decode(body);
+        } else if (typeof body === "string") {
+          captured.body = body;
+        }
+        captured.contentType = contentType;
+        return sendResponse;
+      },
+    };
+  }
+
+  test("forwards POST body to Discord via client and returns response", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    const sentMsg: DiscordMessage = {
+      id: timestampToSnowflake(Date.now()),
+      channel_id: "ch-1",
+      content: "hello from proxy",
+      timestamp: new Date().toISOString(),
+      author: { id: "u-1", username: "bot" },
+    };
+
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "application/json" }),
+      body: sentMsg,
+    });
+
+    const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+    const req = new Request(
+      "http://localhost/api/v10/channels/ch-1/messages",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "hello from proxy" }),
+      },
+    );
+
+    const res = await handler(req);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DiscordMessage;
+    expect(body.id).toBe(sentMsg.id);
+    expect(body.content).toBe("hello from proxy");
+    expect(client.captured.channelId).toBe("ch-1");
+    expect(client.captured.contentType).toBe("application/json");
+  });
+
+  test("injects sent message into cache on success", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    const now = Date.now();
+    const msgId = timestampToSnowflake(now);
+    const sentMsg: DiscordMessage = {
+      id: msgId,
+      channel_id: "ch-1",
+      content: "cached after send",
+      timestamp: new Date().toISOString(),
+      author: { id: "u-1", username: "bot" },
+    };
+
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: sentMsg,
+    });
+
+    const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+    const req = new Request(
+      "http://localhost/api/v10/channels/ch-1/messages",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "cached after send" }),
+      },
+    );
+
+    await handler(req);
+
+    // The message should now be in the cache
+    const afterId = timestampToSnowflake(now - 60_000);
+    const cached = cache.getMessages("ch-1", afterId);
+    expect(cached).toBeDefined();
+    expect(cached!.data).toHaveLength(1);
+    expect(cached!.data[0].id).toBe(msgId);
+    expect(cached!.data[0].content).toBe("cached after send");
+  });
+
+  test("does NOT inject into cache on Discord error", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    const client = mockClient({
+      ok: false,
+      status: 403,
+      headers: new Headers(),
+      body: { message: "Missing Permissions", code: 50013 },
+    });
+
+    const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+    const req = new Request(
+      "http://localhost/api/v10/channels/ch-1/messages",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "forbidden" }),
+      },
+    );
+
+    const res = await handler(req);
+
+    expect(res.status).toBe(403);
+    // Cache should remain empty for this channel
+    const cached = cache.getMessages("ch-1", "0");
+    expect(cached).toBeUndefined();
+  });
+
+  test("forwards multipart/form-data content-type to Discord client", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    const sentMsg: DiscordMessage = {
+      id: timestampToSnowflake(Date.now()),
+      channel_id: "ch-1",
+      content: "with attachment",
+      timestamp: new Date().toISOString(),
+      author: { id: "u-1", username: "bot" },
+    };
+
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: sentMsg,
+    });
+
+    const boundary = "----testboundary";
+    const multipartBody =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="content"\r\n\r\n` +
+      `with attachment\r\n` +
+      `--${boundary}--`;
+
+    const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+    const req = new Request(
+      "http://localhost/api/v10/channels/ch-1/messages",
+      {
+        method: "POST",
+        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+        body: multipartBody,
+      },
+    );
+
+    const res = await handler(req);
+
+    expect(res.status).toBe(200);
+    expect(client.captured.contentType).toBe(
+      `multipart/form-data; boundary=${boundary}`,
+    );
+    expect(client.captured.body).toContain("with attachment");
+  });
+
+  test("returns 503 when no Discord client is configured", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    // No client passed — write pass-through disabled
+    const handler = createHandler(cache, "guild-1", TEST_TTL);
+    const req = new Request(
+      "http://localhost/api/v10/channels/ch-1/messages",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "test" }),
+      },
+    );
+
+    const res = await handler(req);
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toContain("not configured");
+  });
+});
+
 describe("unknown routes", () => {
   test("returns 404 for unknown path", async () => {
     const cache = createCache(TEST_TTL, TEST_WINDOW);
     const handler = createHandler(cache, "guild-1");
     const req = new Request("http://localhost/unknown", { method: "GET" });
-    const res = handler(req);
+    const res = await handler(req);
 
     expect(res.status).toBe(404);
 
