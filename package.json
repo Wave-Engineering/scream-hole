@@ -1,0 +1,17 @@
+{
+  "name": "scream-hole",
+  "version": "0.1.0",
+  "description": "Discord REST API caching proxy — polls once, serves many",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "lint": "bunx tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build index.ts --outdir dist --target bun",
+    "start": "bun run index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "license": "MIT"
+}
