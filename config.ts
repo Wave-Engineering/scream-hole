@@ -11,6 +11,10 @@ export interface Config {
   discordGuildId: string;
   /** Polling interval in milliseconds */
   pollIntervalMs: number;
+  /** Cache TTL in milliseconds — derived from pollIntervalMs * 1.5 */
+  cacheTtlMs: number;
+  /** Cache window in milliseconds — messages older than this are evicted */
+  cacheWindowMs: number;
   /** HTTP server port */
   port: number;
   /** Log level */
@@ -60,6 +64,8 @@ export function loadConfig(
   }
 
   const pollIntervalMs = Number(env.POLL_INTERVAL_MS) || 15000;
+  const cacheTtlMs = Math.floor(pollIntervalMs * 1.5);
+  const cacheWindowMs = Number(env.CACHE_WINDOW_MS) || 4 * 60 * 60 * 1000; // 4 hours
   const port = Number(env.PORT) || 3000;
 
   const rawLogLevel = (env.LOG_LEVEL ?? "info").toLowerCase();
@@ -71,6 +77,8 @@ export function loadConfig(
     discordBotToken,
     discordGuildId,
     pollIntervalMs,
+    cacheTtlMs,
+    cacheWindowMs,
     port,
     logLevel,
   };
