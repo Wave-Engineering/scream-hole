@@ -13,6 +13,8 @@ describe("loadConfig", () => {
     expect(config.discordBotToken).toBe("test-token-123");
     expect(config.discordGuildId).toBe("guild-456");
     expect(config.pollIntervalMs).toBe(15000);
+    expect(config.cacheTtlMs).toBe(22500); // 15000 * 1.5
+    expect(config.cacheWindowMs).toBe(4 * 60 * 60 * 1000); // 4 hours
     expect(config.port).toBe(3000);
     expect(config.logLevel).toBe("info");
   });
@@ -26,8 +28,25 @@ describe("loadConfig", () => {
     });
 
     expect(config.pollIntervalMs).toBe(5000);
+    expect(config.cacheTtlMs).toBe(7500); // 5000 * 1.5
     expect(config.port).toBe(8080);
     expect(config.logLevel).toBe("debug");
+  });
+
+  test("cache TTL is derived from poll interval", () => {
+    const config = loadConfig({
+      ...requiredEnv,
+      POLL_INTERVAL_MS: "10000",
+    });
+    expect(config.cacheTtlMs).toBe(15000); // 10000 * 1.5
+  });
+
+  test("CACHE_WINDOW_MS can be overridden", () => {
+    const config = loadConfig({
+      ...requiredEnv,
+      CACHE_WINDOW_MS: "7200000", // 2 hours
+    });
+    expect(config.cacheWindowMs).toBe(7200000);
   });
 
   test("throws when DISCORD_BOT_TOKEN is missing", () => {
