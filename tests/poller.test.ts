@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { initialPoll, createLogger, withTimeout } from "../poller";
+import { initialPoll, createLogger, withTimeout, createChannelHealth } from "../poller";
+import type { ChannelHealth } from "../poller";
 import { createCache } from "../cache";
 import type { DiscordClient, DiscordChannel, DiscordMessage } from "../discord";
 
@@ -49,8 +50,9 @@ describe("initialPoll", () => {
     const client = makeMockClient(channels, { "ch-1": messages });
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
     const logger = createLogger("error"); // suppress output in tests
+    const health = createChannelHealth(15_000);
 
-    const count = await initialPoll(client, cache, "guild-1", logger);
+    const count = await initialPoll(client, cache, "guild-1", logger, health);
 
     expect(count).toBe(1); // only 1 text channel
     expect(cache.getChannels("guild-1")).toBeDefined();
@@ -77,8 +79,9 @@ describe("initialPoll", () => {
 
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
     const logger = createLogger("error");
+    const health = createChannelHealth(15_000);
 
-    const count = await initialPoll(client, cache, "guild-1", logger);
+    const count = await initialPoll(client, cache, "guild-1", logger, health);
     expect(count).toBe(0);
   });
 
@@ -116,8 +119,9 @@ describe("initialPoll", () => {
 
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
     const logger = createLogger("error");
+    const health = createChannelHealth(15_000);
 
-    const count = await initialPoll(client, cache, "guild-1", logger);
+    const count = await initialPoll(client, cache, "guild-1", logger, health);
     expect(count).toBe(2); // both text channels counted
 
     // ch-1 failed — should have no messages
@@ -148,6 +152,164 @@ describe("withTimeout", () => {
     await expect(withTimeout(slow, 10, "slow op")).rejects.toThrow(
       "Timeout after 10ms",
     );
+  });
+});
+
+describe("createChannelHealth", () => {
+  test("shouldSkip returns false for unknown channels", () => {
+    const health = createChannelHealth(15_000);
+    expect(health.shouldSkip("unknown")).toBe(false);
+  });
+
+  test("shouldSkip returns true after failure", () => {
+    const health = createChannelHealth(15_000);
+    health.recordFailure("ch-1");
+    expect(health.shouldSkip("ch-1")).toBe(true);
+  });
+
+  test("recordSuccess resets backoff", () => {
+    const health = createChannelHealth(15_000);
+    health.recordFailure("ch-1");
+    expect(health.shouldSkip("ch-1")).toBe(true);
+
+    const recovered = health.recordSuccess("ch-1");
+    expect(recovered).toBe(true);
+    expect(health.shouldSkip("ch-1")).toBe(false);
+  });
+
+  test("recordSuccess returns false for channels not previously failing", () => {
+    const health = createChannelHealth(15_000);
+    expect(health.recordSuccess("ch-1")).toBe(false);
+  });
+
+  test("consecutive failures increase backoff duration", () => {
+    const health = createChannelHealth(1_000);
+
+    const r1 = health.recordFailure("ch-1");
+    expect(r1.failures).toBe(1);
+    expect(r1.backoffMs).toBe(1_000); // 1s * 2^0
+
+    const r2 = health.recordFailure("ch-1");
+    expect(r2.failures).toBe(2);
+    expect(r2.backoffMs).toBe(2_000); // 1s * 2^1
+
+    const r3 = health.recordFailure("ch-1");
+    expect(r3.failures).toBe(3);
+    expect(r3.backoffMs).toBe(4_000); // 1s * 2^2
+  });
+
+  test("backoff caps at 16x poll interval", () => {
+    const health = createChannelHealth(1_000);
+
+    // Ramp up to the cap (failure 5 = exponent min(4,4) = 16x)
+    for (let i = 0; i < 4; i++) {
+      health.recordFailure("ch-1");
+    }
+
+    // Failure 5: cap first applies
+    const atCap = health.recordFailure("ch-1");
+    expect(atCap.failures).toBe(5);
+    expect(atCap.backoffMs).toBe(16_000); // 1000 * 2^4
+
+    // Failure 6: stays capped, doesn't grow
+    const pastCap = health.recordFailure("ch-1");
+    expect(pastCap.failures).toBe(6);
+    expect(pastCap.backoffMs).toBe(16_000);
+  });
+});
+
+describe("channel backoff in polling", () => {
+  test("skips channels in backoff on subsequent polls", async () => {
+    const now = Date.now();
+    const channels: DiscordChannel[] = [
+      { id: "ch-ok", type: 0, name: "general" },
+      { id: "ch-fail", type: 0, name: "restricted" },
+    ];
+
+    const id1 = timestampToSnowflake(now - 60_000);
+    const fetchCounts = new Map<string, number>();
+
+    const client: DiscordClient = {
+      async fetchChannels(): Promise<DiscordChannel[]> {
+        return channels;
+      },
+      async fetchMessages(channelId: string): Promise<DiscordMessage[]> {
+        fetchCounts.set(channelId, (fetchCounts.get(channelId) ?? 0) + 1);
+        if (channelId === "ch-fail") {
+          throw new Error("403 Forbidden");
+        }
+        return [
+          {
+            id: id1,
+            channel_id: channelId,
+            content: "hello",
+            timestamp: new Date().toISOString(),
+            author: { id: "u-1", username: "user1" },
+          },
+        ];
+      },
+      async sendMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
+    };
+
+    const cache = createCache(60_000, 4 * 60 * 60 * 1000);
+    const logger = createLogger("error");
+    const health = createChannelHealth(15_000);
+
+    // First poll — both channels attempted
+    await initialPoll(client, cache, "guild-1", logger, health);
+    expect(fetchCounts.get("ch-ok")).toBe(1);
+    expect(fetchCounts.get("ch-fail")).toBe(1);
+
+    // Second poll immediately — ch-fail should be skipped (in backoff)
+    await initialPoll(client, cache, "guild-1", logger, health);
+    expect(fetchCounts.get("ch-ok")).toBe(2);
+    expect(fetchCounts.get("ch-fail")).toBe(1); // NOT incremented
+  });
+
+  test("channel recovers after successful fetch", async () => {
+    const now = Date.now();
+    const channels: DiscordChannel[] = [
+      { id: "ch-flaky", type: 0, name: "flaky" },
+    ];
+
+    const id1 = timestampToSnowflake(now - 60_000);
+    const health = createChannelHealth(1); // 1ms backoff so it expires instantly
+
+    // Seed a failure
+    health.recordFailure("ch-flaky");
+
+    // Wait for backoff to expire (1ms base * 2^0 = 1ms)
+    await new Promise((r) => setTimeout(r, 5));
+
+    const client: DiscordClient = {
+      async fetchChannels(): Promise<DiscordChannel[]> {
+        return channels;
+      },
+      async fetchMessages(): Promise<DiscordMessage[]> {
+        return [
+          {
+            id: id1,
+            channel_id: "ch-flaky",
+            content: "back online",
+            timestamp: new Date().toISOString(),
+            author: { id: "u-1", username: "user1" },
+          },
+        ];
+      },
+      async sendMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
+    };
+
+    const cache = createCache(60_000, 4 * 60 * 60 * 1000);
+    const logger = createLogger("error");
+
+    await initialPoll(client, cache, "guild-1", logger, health);
+
+    // Channel should no longer be in backoff
+    expect(health.shouldSkip("ch-flaky")).toBe(false);
   });
 });
 

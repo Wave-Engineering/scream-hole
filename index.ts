@@ -3,7 +3,7 @@ import { createDiscordClient } from "./discord";
 import type { DiscordClient, DiscordMessage } from "./discord";
 import { createCache } from "./cache";
 import type { Cache } from "./cache";
-import { initialPoll, startPollingLoop, createLogger } from "./poller";
+import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
 
 const VERSION = "0.2.0";
 const startTime = Date.now();
@@ -159,6 +159,7 @@ if (import.meta.main) {
   const client = createDiscordClient(config.discordBotToken);
   const cache = createCache(config.cacheTtlMs, config.cacheWindowMs);
   const logger = createLogger(config.logLevel);
+  const health = createChannelHealth(config.pollIntervalMs);
 
   logger.info(`scream-hole v${VERSION} starting...`);
 
@@ -168,6 +169,7 @@ if (import.meta.main) {
     cache,
     config.discordGuildId,
     logger,
+    health,
   );
 
   const handler = createHandler(cache, config.discordGuildId, config.cacheTtlMs, client);
@@ -178,7 +180,7 @@ if (import.meta.main) {
   });
 
   // Start the continuous polling loop
-  const poller = startPollingLoop(client, cache, config);
+  const poller = startPollingLoop(client, cache, config, health);
 
   const intervalSec = (config.pollIntervalMs / 1000).toFixed(1);
   logger.info(

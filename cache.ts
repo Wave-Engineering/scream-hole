@@ -140,15 +140,13 @@ export function createCache(cacheTtlMs: number, cacheWindowMs: number): Cache {
         hits++;
       }
 
-      // If `after` points to a message older than the cache window, return []
+      // Clamp: if `after` is older than the cache window, use the window
+      // start so we return all cached messages instead of an empty result
       const afterTs = snowflakeToTimestamp(after);
       const windowStart = Date.now() - cacheWindowMs;
-      if (afterTs < windowStart) {
-        return { data: [], cachedAt: entry.cachedAt };
-      }
-
-      // Filter to only messages with snowflake ID > after
-      const afterBigInt = BigInt(after);
+      const afterBigInt = afterTs < windowStart
+        ? ((BigInt(windowStart) - DISCORD_EPOCH) << 22n) - 1n
+        : BigInt(after);
       let filtered = entry.data.filter((msg) => BigInt(msg.id) > afterBigInt);
 
       // Apply limit (return newest N, matching Discord API behavior)
