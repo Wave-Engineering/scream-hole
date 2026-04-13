@@ -100,7 +100,7 @@ describe("cache messages", () => {
     expect(cache.getMessages("unknown-ch", after)).toBeUndefined();
   });
 
-  test("returns empty array when `after` is older than cache window", () => {
+  test("clamps `after` to window start when older than cache window", () => {
     const cache = createCache(60_000, FOUR_HOURS);
     const now = Date.now();
 
@@ -108,10 +108,29 @@ describe("cache messages", () => {
     cache.setMessages("ch-1", [makeMessage(recentId, "ch-1", "recent")]);
 
     // `after` is 5 hours ago — outside the 4-hour window
+    // Should clamp to window start and return all messages within the window
     const oldId = timestampToSnowflake(now - 5 * 60 * 60 * 1000);
     const result = cache.getMessages("ch-1", oldId);
     expect(result).toBeDefined();
-    expect(result!.data).toEqual([]);
+    expect(result!.data).toHaveLength(1);
+    expect(result!.data[0].content).toBe("recent");
+  });
+
+  test("returns all cached messages when after=0", () => {
+    const cache = createCache(60_000, FOUR_HOURS);
+    const now = Date.now();
+
+    const id1 = timestampToSnowflake(now - 60_000);
+    const id2 = timestampToSnowflake(now - 30_000);
+    cache.setMessages("ch-1", [
+      makeMessage(id1, "ch-1", "msg-1"),
+      makeMessage(id2, "ch-1", "msg-2"),
+    ]);
+
+    // after=0 is the "give me everything" pattern — should return all
+    const result = cache.getMessages("ch-1", "0");
+    expect(result).toBeDefined();
+    expect(result!.data).toHaveLength(2);
   });
 
   test("evicts messages older than cache window", () => {

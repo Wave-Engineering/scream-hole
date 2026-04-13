@@ -182,7 +182,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     expect(body[1].content).toBe("new message");
   });
 
-  test("returns empty array when `after` is older than cache window", async () => {
+  test("clamps `after` to window start when older than cache window", async () => {
     const cache = createCache(TEST_TTL, TEST_WINDOW);
     const now = Date.now();
 
@@ -193,6 +193,7 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     ]);
 
     // `after` pointing to 5 hours ago — outside 4-hour window
+    // Should clamp and return all messages within the window
     const oldId = timestampToSnowflake(now - 5 * 60 * 60 * 1000);
 
     const handler = createHandler(cache, "guild-1");
@@ -202,8 +203,9 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual([]);
+    const body = (await res.json()) as { content: string }[];
+    expect(body).toHaveLength(1);
+    expect(body[0].content).toBe("recent");
   });
 
   test("returns 404 for unknown channel", async () => {
