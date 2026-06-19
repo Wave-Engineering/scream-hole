@@ -4,6 +4,7 @@ import type { DiscordClient, DiscordMessage } from "./discord";
 import { createCache } from "./cache";
 import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
+import { claim, release, status, DEFAULT_TTL, type LeaseKind } from "./mic";
 
 const VERSION = "0.2.0";
 const startTime = Date.now();
@@ -36,6 +37,35 @@ function createHandler(
           misses: stats.misses,
         },
       });
+    }
+
+    // Advisory coordination leases (#14): /lease/{mic|send}/{claim|release|status}
+    const leaseMatch = url.pathname.match(/^\/lease\/(mic|send)\/(claim|release|status)$/);
+    if (leaseMatch) {
+      const kind = leaseMatch[1] as LeaseKind;
+      const action = leaseMatch[2];
+      if (action === "status" && req.method === "GET") {
+        const channel = url.searchParams.get("channel");
+        if (!channel) return Response.json({ error: "channel query param required" }, { status: 400 });
+        return Response.json({ kind, channel, lease: status(kind, channel) });
+      }
+      if ((action === "claim" || action === "release") && req.method === "POST") {
+        const body = (await req.json().catch(() => ({}))) as {
+          channel?: string;
+          holder?: string;
+          ttl_ms?: number;
+        };
+        if (!body.channel || !body.holder) {
+          return Response.json({ error: "channel and holder are required" }, { status: 400 });
+        }
+        if (action === "claim") {
+          const ttl =
+            typeof body.ttl_ms === "number" && body.ttl_ms > 0 ? body.ttl_ms : DEFAULT_TTL[kind];
+          return Response.json({ kind, channel: body.channel, ...claim(kind, body.channel, body.holder, ttl) });
+        }
+        return Response.json({ kind, channel: body.channel, ...release(kind, body.channel, body.holder) });
+      }
+      return Response.json({ error: "method not allowed" }, { status: 405 });
     }
 
     // GET /api/v10/guilds/{guildId}/channels
