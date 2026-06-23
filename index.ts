@@ -10,6 +10,40 @@ const VERSION = "0.3.0";
 const startTime = Date.now();
 
 /**
+ * Discord rate-limit response headers, forwarded verbatim on write pass-throughs
+ * so callers can honor Discord's exact backoff (esp. on a propagated 429) instead
+ * of guessing. Allowlist — NOT a blind copy — so edge headers like Set-Cookie /
+ * CF-* / transfer-encoding never leak through the proxy.
+ */
+const RATE_LIMIT_HEADERS = [
+  "retry-after",
+  "x-ratelimit-limit",
+  "x-ratelimit-remaining",
+  "x-ratelimit-reset",
+  "x-ratelimit-reset-after",
+  "x-ratelimit-bucket",
+  "x-ratelimit-global",
+  "x-ratelimit-scope",
+];
+
+/**
+ * Build the proxy's Response for a forwarded write (message send / create
+ * channel / create thread): Discord's status + body verbatim, plus any
+ * allowlisted rate-limit headers Discord returned.
+ */
+function writeResponse(result: SendMessageResponse): Response {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  for (const name of RATE_LIMIT_HEADERS) {
+    const value = result.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  return new Response(JSON.stringify(result.body), {
+    status: result.status,
+    headers,
+  });
+}
+
+/**
  * Create the request handler with access to cache and config.
  * When a DiscordClient is provided, write pass-through (POST) routes are enabled.
  */
@@ -39,7 +73,7 @@ function createHandler(
       const contentType = req.headers.get("Content-Type") ?? "application/json";
       const rawBody = await req.arrayBuffer();
       const result = await fn(rawBody, contentType);
-      return Response.json(result.body, { status: result.status });
+      return writeResponse(result);
     }
 
     // Health endpoint — includes cache stats
@@ -208,11 +242,15 @@ function createHandler(
         }
       }
 
-      // Return Discord's response verbatim (status code + body)
-      return Response.json(result.body, { status: result.status });
+      // Return Discord's response verbatim (status + body + rate-limit headers)
+      return writeResponse(result);
     }
 
     // POST /api/v10/channels/{channelId}/threads — create-thread pass-through (#18, mcp#47)
+    // Covers standalone thread creation only. The message-anchored form
+    // POST /channels/{id}/messages/{id}/threads is NOT matched here — no
+    // consumer creates threads from a message today; add a route if that
+    // changes (otherwise it would 404 through the proxy).
     const threadsMatch = url.pathname.match(
       /^\/api\/v10\/channels\/([^/]+)\/threads$/,
     );

@@ -582,6 +582,62 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
       expect(body.code).toBe(50013);
     });
   });
+
+  describe("write rate-limit header forwarding (#19)", () => {
+    test("forwards Discord rate-limit headers on a 429 create-channel", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: false,
+        status: 429,
+        headers: new Headers({
+          "Retry-After": "5",
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Global": "true",
+          "Set-Cookie": "secret=should-not-leak",
+        }),
+        body: { message: "You are being rate limited.", retry_after: 5, global: true },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/guilds/guild-1/channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("5");
+      expect(res.headers.get("X-RateLimit-Remaining")).toBe("0");
+      expect(res.headers.get("X-RateLimit-Global")).toBe("true");
+      // Allowlist boundary: non-rate-limit edge headers must NOT leak through
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+
+    test("forwards rate-limit headers on the message-send path too (shared write response)", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "Retry-After": "3", "Set-Cookie": "nope" }),
+        body: { message: "You are being rate limited.", retry_after: 3 },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("3");
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+  });
 });
 
 describe("unknown routes", () => {
