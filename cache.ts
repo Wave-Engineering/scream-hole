@@ -54,7 +54,14 @@ export interface Cache {
   /** Get cache statistics */
   getStats(): CacheStats;
 
-  /** Run eviction pass — remove messages older than the cache window */
+  /**
+   * Run eviction pass: drop messages older than the cache window. Empty
+   * entries are KEPT for channels still discovered in Discord — so a quiet or
+   * aged-out known channel returns 200 [] rather than 404 (#16). An entry is
+   * removed only once it has aged out to empty AND its channel is no longer in
+   * the discovered set (truly deleted). Before the first successful channel
+   * poll (no discovery yet) nothing is dropped.
+   */
   evict(): void;
 }
 
@@ -174,6 +181,17 @@ export function createCache(cacheTtlMs: number, cacheWindowMs: number): Cache {
       // Build the set of channel IDs currently discovered in Discord (across
       // all cached guilds). The poller re-discovers the guild every cycle, so
       // this reflects the live channel list.
+      //
+      // ASSUMES A SINGLE POLLED GUILD: `discovered` is global across guilds and
+      // applied to every messageCache channel. That is safe only because the
+      // deployment is hard-single-guild (DISCORD_GUILD_ID is a scalar, one
+      // poller). If multi-guild polling with independent schedules is ever
+      // added, this must be scoped per-guild — otherwise a live channel in a
+      // not-yet-polled guild B would be absent from `discovered` while guild A
+      // makes haveDiscovery true, and get wrongly dropped once it ages out to
+      // empty. The belt-and-suspenders fix then needs a channel→guild reverse
+      // map: require the channel's owning guild to have been polled this cycle
+      // before dropping it.
       const discovered = new Set<string>();
       for (const entry of channelCache.values()) {
         for (const ch of entry.data) {

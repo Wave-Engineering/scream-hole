@@ -54,6 +54,11 @@ DISCORD_BOT_TOKEN=your-token DISCORD_GUILD_ID=your-guild-id bun run start
 | GET | `/api/v10/channels/{id}/messages?after=SNOWFLAKE` | Cached messages (`after` required) |
 | POST | `/api/v10/channels/{id}/messages` | Write pass-through — forwards to Discord |
 
+The messages endpoint **fails open**: a quiet, idle, or not-yet-cached channel
+returns `200 []` (never 404), so consumers treat it as "nothing new" instead of
+falling back to Discord directly and storming its rate limit. Any `after` value
+is accepted, including `after=0` ("everything cached").
+
 ## Development
 
 ```bash
