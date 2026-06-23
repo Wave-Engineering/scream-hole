@@ -208,16 +208,44 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
     expect(body[0].content).toBe("recent");
   });
 
-  test("returns 404 for unknown channel", async () => {
+  // #16: an uncached channel must fail open to 200 [] (not 404), so clients
+  // treat it as "nothing new" instead of re-polling Discord directly → 429.
+  // The watcher/disc-server use three `after` shapes; all must return 200 [].
+  test.each([
+    ["after=0 (disc_read 'everything')", "0"],
+    ["after=<4h-ago snowflake> (watcher baseline)", timestampToSnowflake(Date.now() - 4 * 60 * 60 * 1000)],
+    ["after=<recent cursor> (watcher poll)", timestampToSnowflake(Date.now() - 30_000)],
+  ])("returns 200 [] for uncached channel — fail open (%s)", async (_label, after) => {
     const cache = createCache(TEST_TTL, TEST_WINDOW);
     const handler = createHandler(cache, "guild-1");
 
     const req = new Request(
-      "http://localhost/api/v10/channels/unknown-ch/messages?after=100",
+      `http://localhost/api/v10/channels/unknown-ch/messages?after=${after}`,
     );
     const res = await handler(req);
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Cache")).toBe("MISS");
+    const body = (await res.json()) as DiscordMessage[];
+    expect(body).toEqual([]);
+  });
+
+  test("returns 200 [] for a discovered channel polled empty (no 404)", async () => {
+    const cache = createCache(TEST_TTL, TEST_WINDOW);
+    // Channel discovered + polled with zero messages, then an eviction pass.
+    cache.setChannels("guild-1", [makeChannel("quiet-ch", "quiet")]);
+    cache.setMessages("quiet-ch", []);
+    cache.evict();
+
+    const handler = createHandler(cache, "guild-1");
+    const req = new Request(
+      "http://localhost/api/v10/channels/quiet-ch/messages?after=0",
+    );
+    const res = await handler(req);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DiscordMessage[];
+    expect(body).toEqual([]);
   });
 
   test("`limit` parameter trims response to N newest messages", async () => {

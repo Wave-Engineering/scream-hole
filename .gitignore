@@ -4,3 +4,5 @@ dist/
 .env.*
 *.tsbuildinfo
 .buildinfo
+.wtf/
+.claude/
