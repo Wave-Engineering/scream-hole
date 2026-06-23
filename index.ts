@@ -6,7 +6,7 @@ import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
 import { claim, release, status, DEFAULT_TTL, type LeaseKind } from "./mic";
 
-const VERSION = "0.3.0";
+const VERSION = "1.1.0";
 const startTime = Date.now();
 
 /**
