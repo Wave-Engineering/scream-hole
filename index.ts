@@ -1,12 +1,12 @@
 import { loadConfig } from "./config";
 import { createDiscordClient } from "./discord";
-import type { DiscordClient, DiscordMessage } from "./discord";
+import type { DiscordClient, DiscordMessage, SendMessageResponse } from "./discord";
 import { createCache } from "./cache";
 import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
 import { claim, release, status, DEFAULT_TTL, type LeaseKind } from "./mic";
 
-const VERSION = "0.2.2";
+const VERSION = "0.3.0";
 const startTime = Date.now();
 
 /**
@@ -22,6 +22,25 @@ function createHandler(
   const ttl = cacheTtlMs ?? Infinity;
   return async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    // Forward a resource-creation POST to Discord verbatim (#18). Shared by the
+    // create-channel and create-thread routes: 503 without a client, otherwise
+    // return Discord's status + body unchanged. No cache injection — the poller
+    // discovers the new channel/thread on its next cycle (eventual consistency).
+    async function forwardCreate(
+      fn: (body: BodyInit, contentType: string) => Promise<SendMessageResponse>,
+    ): Promise<Response> {
+      if (!client) {
+        return Response.json(
+          { error: "Write pass-through is not configured (no Discord client)" },
+          { status: 503 },
+        );
+      }
+      const contentType = req.headers.get("Content-Type") ?? "application/json";
+      const rawBody = await req.arrayBuffer();
+      const result = await fn(rawBody, contentType);
+      return Response.json(result.body, { status: result.status });
+    }
 
     // Health endpoint — includes cache stats
     if (req.method === "GET" && url.pathname === "/health") {
@@ -90,6 +109,12 @@ function createHandler(
           "X-Cached-At": new Date(result.cachedAt).toISOString(),
         },
       });
+    }
+
+    // POST /api/v10/guilds/{guildId}/channels — create-channel pass-through (#18)
+    if (req.method === "POST" && channelsMatch) {
+      const reqGuildId = channelsMatch[1];
+      return forwardCreate((body, ct) => client!.createChannel(reqGuildId, body, ct));
     }
 
     // Match /api/v10/channels/{channelId}/messages for both GET and POST
@@ -185,6 +210,15 @@ function createHandler(
 
       // Return Discord's response verbatim (status code + body)
       return Response.json(result.body, { status: result.status });
+    }
+
+    // POST /api/v10/channels/{channelId}/threads — create-thread pass-through (#18, mcp#47)
+    const threadsMatch = url.pathname.match(
+      /^\/api\/v10\/channels\/([^/]+)\/threads$/,
+    );
+    if (req.method === "POST" && threadsMatch) {
+      const channelId = threadsMatch[1];
+      return forwardCreate((body, ct) => client!.createThread(channelId, body, ct));
     }
 
     return Response.json({ error: "not found" }, { status: 404 });

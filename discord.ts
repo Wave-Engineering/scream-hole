@@ -40,6 +40,18 @@ export interface DiscordClient {
     body: BodyInit,
     contentType: string,
   ): Promise<SendMessageResponse>;
+  /** Forward a create-channel POST to `/guilds/{guildId}/channels`. */
+  createChannel(
+    guildId: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse>;
+  /** Forward a create-thread POST to `/channels/{channelId}/threads`. */
+  createThread(
+    channelId: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse>;
 }
 
 /** Minimal fetch signature — avoids Bun-specific `preconnect` property on `typeof fetch`. */
@@ -106,6 +118,33 @@ export function createDiscordClient(
     return res;
   }
 
+  /**
+   * Forward a POST to an arbitrary Discord path and return the raw outcome
+   * (status + parsed body) without throwing. Shared by all write pass-throughs
+   * (message send, channel creation, thread creation).
+   */
+  async function forwardPost(
+    path: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse> {
+    const res = await discordFetch(path, { method: "POST", body, contentType });
+
+    const rawText = await res.text();
+    let responseBody: unknown;
+    try {
+      responseBody = JSON.parse(rawText);
+    } catch {
+      responseBody = rawText;
+    }
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: res.headers,
+      body: responseBody,
+    };
+  }
+
   return {
     async fetchChannels(guildId: string): Promise<DiscordChannel[]> {
       const res = await discordFetch(`/guilds/${guildId}/channels`);
@@ -132,30 +171,28 @@ export function createDiscordClient(
       return res.json() as Promise<DiscordMessage[]>;
     },
 
-    async sendMessage(
+    sendMessage(
       channelId: string,
       body: BodyInit,
       contentType: string,
     ): Promise<SendMessageResponse> {
-      const res = await discordFetch(`/channels/${channelId}/messages`, {
-        method: "POST",
-        body,
-        contentType,
-      });
+      return forwardPost(`/channels/${channelId}/messages`, body, contentType);
+    },
 
-      const rawText = await res.text();
-      let responseBody: unknown;
-      try {
-        responseBody = JSON.parse(rawText);
-      } catch {
-        responseBody = rawText;
-      }
-      return {
-        ok: res.ok,
-        status: res.status,
-        headers: res.headers,
-        body: responseBody,
-      };
+    createChannel(
+      guildId: string,
+      body: BodyInit,
+      contentType: string,
+    ): Promise<SendMessageResponse> {
+      return forwardPost(`/guilds/${guildId}/channels`, body, contentType);
+    },
+
+    createThread(
+      channelId: string,
+      body: BodyInit,
+      contentType: string,
+    ): Promise<SendMessageResponse> {
+      return forwardPost(`/channels/${channelId}/threads`, body, contentType);
     },
   };
 }
