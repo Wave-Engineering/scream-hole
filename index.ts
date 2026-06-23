@@ -6,7 +6,7 @@ import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
 import { claim, release, status, DEFAULT_TTL, type LeaseKind } from "./mic";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.2";
 const startTime = Date.now();
 
 /**
@@ -125,10 +125,18 @@ function createHandler(
 
       const result = cache.getMessages(channelId, after, limit);
       if (!result) {
-        return Response.json(
-          { error: `No cached data for channel ${channelId}` },
-          { status: 404 },
-        );
+        // Fail open (#16): an uncached channel — brand-new, pre-first-poll, or
+        // a race — is indistinguishable to clients from a quiet one. Returning
+        // 404 makes clients re-poll Discord directly and storm its rate limit.
+        // Return 200 [] ("nothing new") instead; clients dedup by message id
+        // and handle empty arrays cleanly.
+        return new Response("[]", {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "MISS",
+          },
+        });
       }
 
       const msgFresh = Date.now() - result.cachedAt <= ttl;

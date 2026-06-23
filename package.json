@@ -1,6 +1,6 @@
 {
   "name": "scream-hole",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Discord REST API caching proxy — polls once, serves many",
   "type": "module",
   "main": "index.ts",

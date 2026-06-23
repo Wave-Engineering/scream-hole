@@ -171,11 +171,30 @@ export function createCache(cacheTtlMs: number, cacheWindowMs: number): Cache {
     },
 
     evict(): void {
+      // Build the set of channel IDs currently discovered in Discord (across
+      // all cached guilds). The poller re-discovers the guild every cycle, so
+      // this reflects the live channel list.
+      const discovered = new Set<string>();
+      for (const entry of channelCache.values()) {
+        for (const ch of entry.data) {
+          discovered.add(ch.id);
+        }
+      }
+      // Only treat the discovered set as authoritative once we actually have
+      // channel data — before the first successful channel poll we cannot prove
+      // anything has disappeared, so we keep every entry (cold-start safe).
+      const haveDiscovery = discovered.size > 0;
+
       for (const [channelId, entry] of messageCache.entries()) {
         const filtered = evictMessages(entry.data);
-        if (filtered.length === 0) {
+        // Drop an entry ONLY when it has aged out to empty AND the channel is
+        // no longer discovered in Discord — i.e. it was truly deleted. This
+        // bounds the empty-entry leak without re-introducing the 404 bug (#16).
+        if (filtered.length === 0 && haveDiscovery && !discovered.has(channelId)) {
           messageCache.delete(channelId);
         } else {
+          // Keep the entry (possibly empty) so a quiet/aged-out *known* channel
+          // returns 200 [] instead of 404.
           entry.data = filtered;
         }
       }

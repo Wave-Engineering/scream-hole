@@ -223,6 +223,81 @@ describe("cache messages", () => {
   });
 });
 
+describe("cache evict() — empty-entry retention (#16)", () => {
+  const FOUR_HOURS = 4 * 60 * 60 * 1000;
+  const SHORT_WINDOW = 1_000;
+
+  test("keeps a discovered channel polled empty (defined [], not deleted)", () => {
+    const cache = createCache(60_000, FOUR_HOURS);
+    cache.setChannels("guild-1", [makeChannel("ch-1", "general")]);
+    cache.setMessages("ch-1", []);
+
+    cache.evict();
+
+    const result = cache.getMessages("ch-1", "0");
+    expect(result).toBeDefined();
+    expect(result!.data).toEqual([]);
+  });
+
+  test("keeps a discovered channel whose messages all aged out", () => {
+    const cache = createCache(60_000, SHORT_WINDOW);
+    const now = Date.now();
+    cache.setChannels("guild-1", [makeChannel("ch-1", "general")]);
+    // Message older than the 1s window — evicted to empty on insert
+    cache.setMessages("ch-1", [
+      makeMessage(timestampToSnowflake(now - 5_000), "ch-1", "stale"),
+    ]);
+
+    cache.evict();
+
+    const result = cache.getMessages("ch-1", "0");
+    expect(result).toBeDefined();
+    expect(result!.data).toEqual([]);
+  });
+
+  test("drops a channel no longer discovered once it ages out to empty", () => {
+    const cache = createCache(60_000, SHORT_WINDOW);
+    const now = Date.now();
+    // Only ch-1 is discovered now; ch-gone was deleted from Discord
+    cache.setChannels("guild-1", [makeChannel("ch-1", "general")]);
+    cache.setMessages("ch-gone", [
+      makeMessage(timestampToSnowflake(now - 5_000), "ch-gone", "stale"),
+    ]);
+
+    cache.evict();
+
+    // Truly-vanished + empty → dropped (bounds the empty-entry leak)
+    expect(cache.getMessages("ch-gone", "0")).toBeUndefined();
+    // ...but the discovered channel is unaffected
+    cache.setMessages("ch-1", []);
+    cache.evict();
+    expect(cache.getMessages("ch-1", "0")).toBeDefined();
+  });
+
+  test("invariant: a discovered channel is never deleted across repeated evicts", () => {
+    const cache = createCache(60_000, FOUR_HOURS);
+    cache.setChannels("guild-1", [makeChannel("ch-1", "general")]);
+    cache.setMessages("ch-1", []);
+
+    cache.evict();
+    cache.evict();
+    cache.evict();
+
+    expect(cache.getMessages("ch-1", "0")).toBeDefined();
+  });
+
+  test("cold-start safe: evict keeps entries before any channel discovery", () => {
+    const cache = createCache(60_000, FOUR_HOURS);
+    // No setChannels yet — the poller hasn't discovered the guild.
+    // We cannot prove anything vanished, so nothing is dropped.
+    cache.setMessages("ch-1", []);
+
+    cache.evict();
+
+    expect(cache.getMessages("ch-1", "0")).toBeDefined();
+  });
+});
+
 describe("cache TTL tracking (hit/miss stats)", () => {
   test("increments hit count for fresh cache reads", () => {
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
