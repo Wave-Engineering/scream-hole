@@ -282,12 +282,23 @@ describe("GET /api/v10/channels/{channelId}/messages", () => {
 
 describe("POST /api/v10/channels/{channelId}/messages", () => {
   /**
-   * Helper: build a mock DiscordClient with a controllable sendMessage.
+   * Helper: build a mock DiscordClient with a controllable response, capturing
+   * the id/body/content-type of the last write (send, create-channel, or
+   * create-thread).
    */
   function mockClient(
     sendResponse: SendMessageResponse,
   ): DiscordClient & { captured: { channelId: string; body: string; contentType: string } } {
     const captured = { channelId: "", body: "", contentType: "" };
+    const record = (id: string, body: BodyInit, contentType: string) => {
+      captured.channelId = id;
+      if (body instanceof ArrayBuffer) {
+        captured.body = new TextDecoder().decode(body);
+      } else if (typeof body === "string") {
+        captured.body = body;
+      }
+      captured.contentType = contentType;
+    };
     return {
       captured,
       async fetchChannels() {
@@ -297,13 +308,15 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
         return [];
       },
       async sendMessage(channelId, body, contentType) {
-        captured.channelId = channelId;
-        if (body instanceof ArrayBuffer) {
-          captured.body = new TextDecoder().decode(body);
-        } else if (typeof body === "string") {
-          captured.body = body;
-        }
-        captured.contentType = contentType;
+        record(channelId, body, contentType);
+        return sendResponse;
+      },
+      async createChannel(guildId, body, contentType) {
+        record(guildId, body, contentType);
+        return sendResponse;
+      },
+      async createThread(channelId, body, contentType) {
+        record(channelId, body, contentType);
         return sendResponse;
       },
     };
@@ -474,6 +487,156 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.error).toContain("not configured");
+  });
+
+  describe("creation pass-through (#18)", () => {
+    test("forwards create-channel POST to Discord, returns 201 verbatim", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const created = { id: "999", name: "new-chan", type: 0, guild_id: "guild-1" };
+      const client = mockClient({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        body: created,
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/guilds/guild-1/channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "new-chan" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { id: string; name: string };
+      expect(body.id).toBe("999");
+      // The guild id (not a channel id) is what gets forwarded for create-channel
+      expect(client.captured.channelId).toBe("guild-1");
+      expect(client.captured.body).toContain("new-chan");
+      expect(client.captured.contentType).toBe("application/json");
+    });
+
+    test("forwards create-thread POST to Discord, returns verbatim (mcp#47)", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const created = { id: "1001", name: "thread-1", type: 11, parent_id: "ch-1" };
+      const client = mockClient({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        body: created,
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "thread-1" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { id: string };
+      expect(body.id).toBe("1001");
+      expect(client.captured.channelId).toBe("ch-1");
+    });
+
+    test("create-channel returns 503 when no Discord client is configured", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const handler = createHandler(cache, "guild-1", TEST_TTL);
+      const req = new Request("http://localhost/api/v10/guilds/guild-1/channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toContain("not configured");
+    });
+
+    test("passes a Discord error status through verbatim on creation", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: false,
+        status: 403,
+        headers: new Headers(),
+        body: { message: "Missing Permissions", code: 50013 },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { code: number };
+      expect(body.code).toBe(50013);
+    });
+  });
+
+  describe("write rate-limit header forwarding (#19)", () => {
+    test("forwards Discord rate-limit headers on a 429 create-channel", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: false,
+        status: 429,
+        headers: new Headers({
+          "Retry-After": "5",
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Global": "true",
+          "Set-Cookie": "secret=should-not-leak",
+        }),
+        body: { message: "You are being rate limited.", retry_after: 5, global: true },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/guilds/guild-1/channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("5");
+      expect(res.headers.get("X-RateLimit-Remaining")).toBe("0");
+      expect(res.headers.get("X-RateLimit-Global")).toBe("true");
+      // Allowlist boundary: non-rate-limit edge headers must NOT leak through
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+
+    test("forwards rate-limit headers on the message-send path too (shared write response)", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "Retry-After": "3", "Set-Cookie": "nope" }),
+        body: { message: "You are being rate limited.", retry_after: 3 },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "x" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("3");
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
   });
 });
 

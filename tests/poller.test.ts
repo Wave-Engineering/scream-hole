@@ -24,6 +24,12 @@ function makeMockClient(
     async sendMessage() {
       return { ok: true, status: 200, headers: new Headers(), body: {} };
     },
+    async createChannel() {
+      return { ok: true, status: 201, headers: new Headers(), body: {} };
+    },
+    async createThread() {
+      return { ok: true, status: 201, headers: new Headers(), body: {} };
+    },
   };
 }
 
@@ -75,6 +81,12 @@ describe("initialPoll", () => {
       async sendMessage() {
         return { ok: true, status: 200, headers: new Headers(), body: {} };
       },
+      async createChannel() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async createThread() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
     };
 
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
@@ -114,6 +126,12 @@ describe("initialPoll", () => {
       },
       async sendMessage() {
         return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
+      async createChannel() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async createThread() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
       },
     };
 
@@ -251,6 +269,12 @@ describe("channel backoff in polling", () => {
       async sendMessage() {
         return { ok: true, status: 200, headers: new Headers(), body: {} };
       },
+      async createChannel() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async createThread() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
     };
 
     const cache = createCache(60_000, 4 * 60 * 60 * 1000);
@@ -300,6 +324,12 @@ describe("channel backoff in polling", () => {
       },
       async sendMessage() {
         return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
+      async createChannel() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async createThread() {
+        return { ok: true, status: 201, headers: new Headers(), body: {} };
       },
     };
 

@@ -209,3 +209,70 @@ describe("sendMessage — POST proxied to Discord", () => {
     expect(body.content).toBe("after retry");
   });
 });
+
+describe("createChannel / createThread — creation POSTs proxied (#18)", () => {
+  function urlCapturingFetch(status: number): {
+    fetch: FetchFn;
+    captured: { url: string; method: string };
+  } {
+    const captured = { url: "", method: "" };
+    const fetch: FetchFn = async (input, init) => {
+      captured.url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      captured.method = init?.method ?? "GET";
+      return new Response(JSON.stringify({ id: "999" }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    return { fetch, captured };
+  }
+
+  test("createChannel POSTs to /guilds/{id}/channels", async () => {
+    const { fetch, captured } = urlCapturingFetch(201);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.createChannel(
+      "guild-1",
+      JSON.stringify({ name: "new-chan" }),
+      "application/json",
+    );
+
+    expect(captured.url).toContain("/guilds/guild-1/channels");
+    expect(captured.method).toBe("POST");
+    expect(result.status).toBe(201);
+  });
+
+  test("createThread POSTs to /channels/{id}/threads", async () => {
+    const { fetch, captured } = urlCapturingFetch(201);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.createThread(
+      "ch-1",
+      JSON.stringify({ name: "thread-1" }),
+      "application/json",
+    );
+
+    expect(captured.url).toContain("/channels/ch-1/threads");
+    expect(captured.method).toBe("POST");
+    expect(result.status).toBe(201);
+  });
+
+  test("createChannel returns Discord error status verbatim", async () => {
+    const { fetch } = urlCapturingFetch(403);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.createChannel(
+      "guild-1",
+      JSON.stringify({ name: "x" }),
+      "application/json",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+  });
+});
