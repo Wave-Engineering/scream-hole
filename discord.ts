@@ -4,6 +4,19 @@
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
+/**
+ * Mask secrets in a request path before logging. The webhook-execute path
+ * `/webhooks/{id}/{token}` carries a reusable credential in the token segment
+ * (and possibly the query), so redact it to `/webhooks/{id}/***`. Other paths
+ * are returned unchanged (their query is useful for debugging and non-secret).
+ */
+function redactPathForLog(path: string): string {
+  if (path.startsWith("/webhooks/")) {
+    return path.replace(/^(\/webhooks\/[^/]+\/)[^/?]+.*$/, "$1***");
+  }
+  return path;
+}
+
 export interface DiscordChannel {
   id: string;
   type: number;
@@ -49,6 +62,26 @@ export interface DiscordClient {
   /** Forward a create-thread POST to `/channels/{channelId}/threads`. */
   createThread(
     channelId: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse>;
+  /** Forward a live GET to `/channels/{channelId}/webhooks` (body verbatim, incl. tokens). */
+  listWebhooks(channelId: string): Promise<SendMessageResponse>;
+  /** Forward a create-webhook POST to `/channels/{channelId}/webhooks`. */
+  createWebhook(
+    channelId: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse>;
+  /**
+   * Forward a webhook-execute POST to `/webhooks/{webhookId}/{token}{search}`.
+   * `search` is the verbatim query string (e.g. `?wait=true`), including the
+   * leading `?`, or empty.
+   */
+  executeWebhook(
+    webhookId: string,
+    token: string,
+    search: string,
     body: BodyInit,
     contentType: string,
   ): Promise<SendMessageResponse>;
@@ -108,7 +141,7 @@ export function createDiscordClient(
       const retryAfter = rawRetryAfter !== null ? Number(rawRetryAfter) : 1;
       const waitMs = Math.max(0, retryAfter) * 1000;
       console.warn(
-        `[discord] 429 rate limited on ${method} ${path} — retrying after ${waitMs}ms`,
+        `[discord] 429 rate limited on ${method} ${redactPathForLog(path)} — retrying after ${waitMs}ms`,
       );
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       // Retry once after waiting
@@ -118,18 +151,8 @@ export function createDiscordClient(
     return res;
   }
 
-  /**
-   * Forward a POST to an arbitrary Discord path and return the raw outcome
-   * (status + parsed body) without throwing. Shared by all write pass-throughs
-   * (message send, channel creation, thread creation).
-   */
-  async function forwardPost(
-    path: string,
-    body: BodyInit,
-    contentType: string,
-  ): Promise<SendMessageResponse> {
-    const res = await discordFetch(path, { method: "POST", body, contentType });
-
+  /** Parse a Discord Response into the verbatim raw outcome (status + body), no throw. */
+  async function parseForward(res: Response): Promise<SendMessageResponse> {
     const rawText = await res.text();
     let responseBody: unknown;
     try {
@@ -143,6 +166,30 @@ export function createDiscordClient(
       headers: res.headers,
       body: responseBody,
     };
+  }
+
+  /**
+   * Forward a POST to an arbitrary Discord path and return the raw outcome
+   * without throwing. Shared by all write pass-throughs (message send, channel
+   * creation, thread creation, webhook create/execute).
+   */
+  async function forwardPost(
+    path: string,
+    body: BodyInit,
+    contentType: string,
+  ): Promise<SendMessageResponse> {
+    return parseForward(
+      await discordFetch(path, { method: "POST", body, contentType }),
+    );
+  }
+
+  /**
+   * Forward a live GET to an arbitrary Discord path and return the raw outcome
+   * (body verbatim — no filtering). Used for non-cacheable reads like the
+   * webhook list, whose token fields must pass through untouched.
+   */
+  async function forwardGet(path: string): Promise<SendMessageResponse> {
+    return parseForward(await discordFetch(path, { method: "GET" }));
   }
 
   return {
@@ -193,6 +240,28 @@ export function createDiscordClient(
       contentType: string,
     ): Promise<SendMessageResponse> {
       return forwardPost(`/channels/${channelId}/threads`, body, contentType);
+    },
+
+    listWebhooks(channelId: string): Promise<SendMessageResponse> {
+      return forwardGet(`/channels/${channelId}/webhooks`);
+    },
+
+    createWebhook(
+      channelId: string,
+      body: BodyInit,
+      contentType: string,
+    ): Promise<SendMessageResponse> {
+      return forwardPost(`/channels/${channelId}/webhooks`, body, contentType);
+    },
+
+    executeWebhook(
+      webhookId: string,
+      token: string,
+      search: string,
+      body: BodyInit,
+      contentType: string,
+    ): Promise<SendMessageResponse> {
+      return forwardPost(`/webhooks/${webhookId}/${token}${search}`, body, contentType);
     },
   };
 }

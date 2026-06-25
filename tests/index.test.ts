@@ -288,8 +288,8 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
    */
   function mockClient(
     sendResponse: SendMessageResponse,
-  ): DiscordClient & { captured: { channelId: string; body: string; contentType: string } } {
-    const captured = { channelId: "", body: "", contentType: "" };
+  ): DiscordClient & { captured: { channelId: string; body: string; contentType: string; search: string } } {
+    const captured = { channelId: "", body: "", contentType: "", search: "" };
     const record = (id: string, body: BodyInit, contentType: string) => {
       captured.channelId = id;
       if (body instanceof ArrayBuffer) {
@@ -317,6 +317,19 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
       },
       async createThread(channelId, body, contentType) {
         record(channelId, body, contentType);
+        return sendResponse;
+      },
+      async listWebhooks(channelId) {
+        captured.channelId = channelId;
+        return sendResponse;
+      },
+      async createWebhook(channelId, body, contentType) {
+        record(channelId, body, contentType);
+        return sendResponse;
+      },
+      async executeWebhook(webhookId, token, search, body, contentType) {
+        record(webhookId, body, contentType);
+        captured.search = search;
         return sendResponse;
       },
     };
@@ -636,6 +649,137 @@ describe("POST /api/v10/channels/{channelId}/messages", () => {
       expect(res.status).toBe(429);
       expect(res.headers.get("Retry-After")).toBe("3");
       expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+  });
+
+  describe("webhook pass-through (#23)", () => {
+    test("GET webhooks list forwards live, body verbatim incl. token", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const webhooks = [
+        { id: "wh-1", name: "cc-fleet", token: "SECRET-TOKEN-abc", channel_id: "ch-1" },
+      ];
+      const client = mockClient({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: webhooks,
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/webhooks", {
+        method: "GET",
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{ id: string; token: string }>;
+      // The token MUST survive — disc-server reuses the webhook by reading it
+      expect(body[0].token).toBe("SECRET-TOKEN-abc");
+      expect(client.captured.channelId).toBe("ch-1");
+    });
+
+    test("POST create webhook forwards, 201 verbatim", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        body: { id: "wh-2", token: "new-tok" },
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request("http://localhost/api/v10/channels/ch-1/webhooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "cc-fleet" }),
+      });
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { id: string };
+      expect(body.id).toBe("wh-2");
+      expect(client.captured.channelId).toBe("ch-1");
+      expect(client.captured.body).toContain("cc-fleet");
+    });
+
+    test("POST execute webhook forwards with ?wait=true preserved, 200 verbatim", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const sent = { id: "msg-1", channel_id: "ch-1", content: "via webhook" };
+      const client = mockClient({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: sent,
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request(
+        "http://localhost/api/v10/webhooks/wh-1/SECRET-TOKEN-abc?wait=true",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "via webhook", username: "cacophonix" }),
+        },
+      );
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { id: string };
+      expect(body.id).toBe("msg-1");
+      expect(client.captured.channelId).toBe("wh-1"); // webhookId recorded
+      expect(client.captured.search).toBe("?wait=true"); // query preserved
+      expect(client.captured.body).toContain("cacophonix");
+    });
+
+    test("execute webhook 204 returns empty body without throwing (#22)", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const client = mockClient({
+        ok: true,
+        status: 204,
+        headers: new Headers({ "Retry-After": "1" }),
+        body: "",
+      });
+
+      const handler = createHandler(cache, "guild-1", TEST_TTL, client);
+      const req = new Request(
+        "http://localhost/api/v10/webhooks/wh-1/tok",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "x" }),
+        },
+      );
+
+      const res = await handler(req);
+
+      expect(res.status).toBe(204);
+      expect(await res.text()).toBe("");
+      // rate-limit headers still forwarded on a null-body status
+      expect(res.headers.get("Retry-After")).toBe("1");
+    });
+
+    test("webhook routes return 503 when no Discord client is configured", async () => {
+      const cache = createCache(TEST_TTL, TEST_WINDOW);
+      const handler = createHandler(cache, "guild-1", TEST_TTL); // no client
+      for (const req of [
+        new Request("http://localhost/api/v10/channels/ch-1/webhooks", { method: "GET" }),
+        new Request("http://localhost/api/v10/channels/ch-1/webhooks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }),
+        new Request("http://localhost/api/v10/webhooks/wh-1/tok", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }),
+      ]) {
+        const res = await handler(req);
+        expect(res.status).toBe(503);
+      }
     });
   });
 });

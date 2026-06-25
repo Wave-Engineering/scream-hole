@@ -6,8 +6,16 @@ import type { Cache } from "./cache";
 import { initialPoll, startPollingLoop, createLogger, createChannelHealth } from "./poller";
 import { claim, release, status, DEFAULT_TTL, type LeaseKind } from "./mic";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const startTime = Date.now();
+
+/**
+ * Statuses that MUST have a null body per the Fetch spec — constructing a
+ * `Response` with a non-null body and one of these throws. Discord can return
+ * 204 No Content from a webhook-execute (#23), so the shared write builder
+ * must emit a null body for these (#22).
+ */
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
 /**
  * Discord rate-limit response headers, forwarded verbatim on write pass-throughs
@@ -32,11 +40,17 @@ const RATE_LIMIT_HEADERS = [
  * allowlisted rate-limit headers Discord returned.
  */
 function writeResponse(result: SendMessageResponse): Response {
-  const headers = new Headers({ "Content-Type": "application/json" });
+  const headers = new Headers();
   for (const name of RATE_LIMIT_HEADERS) {
     const value = result.headers.get(name);
     if (value !== null) headers.set(name, value);
   }
+  // Null-body statuses (e.g. a 204 from webhook-execute) must not carry a body,
+  // else the Response constructor throws (#22). Still forward rate-limit headers.
+  if (NULL_BODY_STATUSES.has(result.status)) {
+    return new Response(null, { status: result.status, headers });
+  }
+  headers.set("Content-Type", "application/json");
   return new Response(JSON.stringify(result.body), {
     status: result.status,
     headers,
@@ -257,6 +271,40 @@ function createHandler(
     if (req.method === "POST" && threadsMatch) {
       const channelId = threadsMatch[1];
       return forwardCreate((body, ct) => client!.createThread(channelId, body, ct));
+    }
+
+    // /api/v10/channels/{channelId}/webhooks — webhook list (GET) + create (POST) (#23)
+    const webhooksMatch = url.pathname.match(
+      /^\/api\/v10\/channels\/([^/]+)\/webhooks$/,
+    );
+    if (req.method === "GET" && webhooksMatch) {
+      if (!client) {
+        return Response.json(
+          { error: "Webhook pass-through is not configured (no Discord client)" },
+          { status: 503 },
+        );
+      }
+      // Live, non-cached forward: webhook tokens must not be cached/staled, and
+      // the body (each webhook's `token`) passes through verbatim so consumers
+      // reuse an existing webhook instead of exhausting Discord's per-channel cap.
+      return writeResponse(await client.listWebhooks(webhooksMatch[1]));
+    }
+    if (req.method === "POST" && webhooksMatch) {
+      const channelId = webhooksMatch[1];
+      return forwardCreate((body, ct) => client!.createWebhook(channelId, body, ct));
+    }
+
+    // POST /api/v10/webhooks/{webhookId}/{token} — webhook execute pass-through (#23)
+    // Top-level route (not under /channels). The verbatim query string (e.g.
+    // `?wait=true`) is preserved — disc-server relies on it to get the message back.
+    const webhookExecMatch = url.pathname.match(
+      /^\/api\/v10\/webhooks\/([^/]+)\/([^/]+)$/,
+    );
+    if (req.method === "POST" && webhookExecMatch) {
+      const [, webhookId, token] = webhookExecMatch;
+      return forwardCreate((body, ct) =>
+        client!.executeWebhook(webhookId, token, url.search, body, ct),
+      );
     }
 
     return Response.json({ error: "not found" }, { status: 404 });
