@@ -275,4 +275,81 @@ describe("createChannel / createThread — creation POSTs proxied (#18)", () => 
     expect(result.ok).toBe(false);
     expect(result.status).toBe(403);
   });
+
+  test("listWebhooks GETs /channels/{id}/webhooks", async () => {
+    const { fetch, captured } = urlCapturingFetch(200);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.listWebhooks("ch-1");
+
+    expect(captured.url).toContain("/channels/ch-1/webhooks");
+    expect(captured.method).toBe("GET");
+    expect(result.status).toBe(200);
+  });
+
+  test("createWebhook POSTs /channels/{id}/webhooks", async () => {
+    const { fetch, captured } = urlCapturingFetch(201);
+    const client = createDiscordClient("test-token", fetch);
+
+    await client.createWebhook("ch-1", JSON.stringify({ name: "cc-fleet" }), "application/json");
+
+    expect(captured.url).toContain("/channels/ch-1/webhooks");
+    expect(captured.method).toBe("POST");
+  });
+
+  test("executeWebhook POSTs /webhooks/{id}/{token} with query preserved", async () => {
+    const { fetch, captured } = urlCapturingFetch(200);
+    const client = createDiscordClient("test-token", fetch);
+
+    await client.executeWebhook(
+      "wh-1",
+      "SECRET-TOKEN",
+      "?wait=true",
+      JSON.stringify({ content: "hi" }),
+      "application/json",
+    );
+
+    expect(captured.url).toContain("/webhooks/wh-1/SECRET-TOKEN?wait=true");
+    expect(captured.method).toBe("POST");
+  });
+
+  test("429 on executeWebhook does NOT log the webhook token (redacted)", async () => {
+    let calls = 0;
+    const rateLimitedThen200: FetchFn = async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response("{}", {
+          status: 429,
+          headers: { "Retry-After": "0" },
+        });
+      }
+      return new Response(JSON.stringify({ id: "msg-1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      const client = createDiscordClient("test-token", rateLimitedThen200);
+      await client.executeWebhook(
+        "wh-1",
+        "SUPER-SECRET-TOKEN",
+        "?wait=true",
+        JSON.stringify({ content: "hi" }),
+        "application/json",
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+
+    const joined = warnings.join("\n");
+    expect(joined).toContain("429 rate limited"); // the retry did log
+    expect(joined).not.toContain("SUPER-SECRET-TOKEN"); // but not the token
+    expect(joined).toContain("/webhooks/wh-1/***"); // it was masked
+  });
 });
