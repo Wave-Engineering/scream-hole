@@ -107,6 +107,24 @@ function mockClient(
   };
 }
 
+// The two version fields must move together. Nothing enforced that: the /health
+// test below compares the served value against the same constant that produced
+// it, so it is tautological — it proves /health is WIRED to VERSION, which is
+// useful, but it can never catch a missed or half-applied bump. That left the
+// release convention (bdb607a) resting entirely on the author remembering both
+// files, with no automated backstop.
+//
+// LIMIT, stated adjacent: this catches DRIFT BETWEEN the two files. It cannot
+// catch both being bumped to the same wrong value, and it does not know the git
+// tag exists — agreement with `v{VERSION}` is still verified by hand at tag time.
+test("VERSION and package.json agree — a half-applied bump fails here", async () => {
+  const pkg = (await Bun.file(
+    new URL("../package.json", import.meta.url).pathname,
+  ).json()) as { version: string };
+
+  expect(VERSION).toBe(pkg.version);
+});
+
 describe("GET /health", () => {
   test("returns 200 with status ok, uptime, version, and cache stats", async () => {
     const cache = createCache(TEST_TTL, TEST_WINDOW);
