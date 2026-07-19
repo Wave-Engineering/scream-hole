@@ -43,7 +43,17 @@ export interface Cache {
   /**
    * Get messages for a channel filtered by `after` snowflake.
    * Returns undefined if the channel is not cached at all.
-   * Returns empty array if `after` is older than the cache window.
+   *
+   * An `after` older than the cache window is CLAMPED to the window start, so
+   * everything cached is returned — it does NOT return an empty array. (That
+   * was this docstring's previous claim and it described pre-clamp behavior;
+   * the README now publishes the clamp as a contract, so do not "restore" the
+   * empty-array behavior without changing both.)
+   *
+   * `limit` returns the NEWEST n matches, discarding older ones nearest the
+   * `after` cursor — see the caveat in README.md's endpoint notes. Whether that
+   * matches Discord's own `after`+`limit` ordering is UNMEASURED; see #30
+   * before trusting the "matching Discord API behavior" note at the slice.
    */
   getMessages(
     channelId: string,
