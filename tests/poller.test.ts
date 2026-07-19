@@ -30,6 +30,9 @@ function makeMockClient(
     async createThread() {
       return { ok: true, status: 201, headers: new Headers(), body: {} };
     },
+    async fetchMessage() {
+      return { ok: true, status: 200, headers: new Headers(), body: {} };
+    },
     async listWebhooks() {
       return { ok: true, status: 200, headers: new Headers(), body: [] };
     },
@@ -96,6 +99,9 @@ describe("initialPoll", () => {
       async createThread() {
         return { ok: true, status: 201, headers: new Headers(), body: {} };
       },
+      async fetchMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
       async listWebhooks() {
         return { ok: true, status: 200, headers: new Headers(), body: [] };
       },
@@ -150,6 +156,9 @@ describe("initialPoll", () => {
       },
       async createThread() {
         return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async fetchMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
       },
       async listWebhooks() {
         return { ok: true, status: 200, headers: new Headers(), body: [] };
@@ -302,6 +311,9 @@ describe("channel backoff in polling", () => {
       async createThread() {
         return { ok: true, status: 201, headers: new Headers(), body: {} };
       },
+      async fetchMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
+      },
       async listWebhooks() {
         return { ok: true, status: 200, headers: new Headers(), body: [] };
       },
@@ -366,6 +378,9 @@ describe("channel backoff in polling", () => {
       },
       async createThread() {
         return { ok: true, status: 201, headers: new Headers(), body: {} };
+      },
+      async fetchMessage() {
+        return { ok: true, status: 200, headers: new Headers(), body: {} };
       },
       async listWebhooks() {
         return { ok: true, status: 200, headers: new Headers(), body: [] };

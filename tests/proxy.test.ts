@@ -276,6 +276,29 @@ describe("createChannel / createThread — creation POSTs proxied (#18)", () => 
     expect(result.status).toBe(403);
   });
 
+  test("fetchMessage GETs /channels/{id}/messages/{messageId} (#25)", async () => {
+    const { fetch, captured } = urlCapturingFetch(200);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.fetchMessage("ch-1", "msg-42");
+
+    // The full two-segment path is the whole point — the proxy route this backs
+    // exists because the LIST path alone was all that matched.
+    expect(captured.url).toContain("/channels/ch-1/messages/msg-42");
+    expect(captured.method).toBe("GET");
+    expect(result.status).toBe(200);
+  });
+
+  test("fetchMessage surfaces a Discord 404 verbatim rather than throwing", async () => {
+    const { fetch } = urlCapturingFetch(404);
+    const client = createDiscordClient("test-token", fetch);
+
+    const result = await client.fetchMessage("ch-1", "deleted-1");
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
+  });
+
   test("listWebhooks GETs /channels/{id}/webhooks", async () => {
     const { fetch, captured } = urlCapturingFetch(200);
     const client = createDiscordClient("test-token", fetch);

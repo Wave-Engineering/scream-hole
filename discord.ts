@@ -65,6 +65,17 @@ export interface DiscordClient {
     body: BodyInit,
     contentType: string,
   ): Promise<SendMessageResponse>;
+  /**
+   * Forward a live GET to `/channels/{channelId}/messages/{messageId}`.
+   *
+   * Deliberately NOT cache-backed. Callers use this to distinguish a deleted
+   * message (Discord 404) from a transient failure, so a cached hit for a
+   * message deleted upstream would invert that discrimination.
+   */
+  fetchMessage(
+    channelId: string,
+    messageId: string,
+  ): Promise<SendMessageResponse>;
   /** Forward a live GET to `/channels/{channelId}/webhooks` (body verbatim, incl. tokens). */
   listWebhooks(channelId: string): Promise<SendMessageResponse>;
   /** Forward a create-webhook POST to `/channels/{channelId}/webhooks`. */
@@ -240,6 +251,13 @@ export function createDiscordClient(
       contentType: string,
     ): Promise<SendMessageResponse> {
       return forwardPost(`/channels/${channelId}/threads`, body, contentType);
+    },
+
+    fetchMessage(
+      channelId: string,
+      messageId: string,
+    ): Promise<SendMessageResponse> {
+      return forwardGet(`/channels/${channelId}/messages/${messageId}`);
     },
 
     listWebhooks(channelId: string): Promise<SendMessageResponse> {
