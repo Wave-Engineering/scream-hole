@@ -8,11 +8,20 @@ permissions:
   contents: read
   packages: write
 
+env:
+  # GHCR path hardcoded lowercase. The old form `ghcr.io/${{ github.repository }}`
+  # interpolated to `ghcr.io/Wave-Engineering/scream-hole` (capital) — GHCR tolerates that,
+  # but Docker Hub (the mirror target below) rejects a mixed-case repository path.
+  IMAGE: ghcr.io/wave-engineering/scream-hole
+
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
@@ -20,10 +29,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # NOTE: Docker Hub login is deliberately AFTER the build (see flightdeck #20). The
+      # oakandwave Org Access Token is scoped to oakandwave/* only; logging into Docker Hub
+      # before the build makes buildx present it for ALL docker.io pulls, and it cannot pull
+      # the oven/bun base (401 insufficient scopes) -> build fails. Building with no Docker
+      # Hub creds keeps those public pulls anonymous (they work).
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE }}
+          # Force the OCI source/url labels lowercase (metadata-action's auto-source would
+          # otherwise bake the org's capitalized "Wave-Engineering" URL).
+          labels: |
+            org.opencontainers.image.source=https://github.com/wave-engineering/scream-hole
+            org.opencontainers.image.url=https://github.com/wave-engineering/scream-hole
           # `latest` is deliberately ABSENT here. Do not add it back.
           #
           # metadata-action defaults to `flavor: latest=auto` (src/flavor.ts
@@ -57,8 +77,37 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
 
-      - uses: docker/build-push-action@v6
+      - name: Build and push (GHCR)
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Log in to Docker Hub
+        # AFTER the build (see the note above): the OAT is only ever presented to docker.io
+        # for the oakandwave push it is scoped for. Serves both the mirror and Scout below.
+        uses: docker/login-action@v3
+        with:
+          username: oakandwave
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Mirror GHCR tags to Docker Hub oakandwave
+        # Registry migration: copy the just-pushed GHCR tags to docker.io/oakandwave.
+        # imagetools copies cross-registry using each registry's own creds and rebuilds nothing.
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r r; do [ -n "$r" ] && docker buildx imagetools create --tag "docker.io/oakandwave/scream-hole:${r##*:}" "$r"; done <<< "$TAGS"
+
+      - name: Docker Scout — CVE scan the pushed image
+        # Scans the actual image layers for known CVEs. Non-blocking; continue-on-error covers
+        # ALL failures (auth/infra), so a Scout error can't red a release whose dual-push
+        # already succeeded (flightdeck #20 review).
+        continue-on-error: true
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: docker.io/oakandwave/scream-hole:${{ steps.meta.outputs.version }}
+          only-severities: critical,high
+          write-comment: false

@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pin bun so setup-bun downloads the release asset directly instead of calling the
+          # GitHub API to resolve a floating version — that refs/tags call intermittently 503s
+          # and flaked this job (the "lint failing" run was a transient API 503, not a lint
+          # error; #35). Matches the bun version the rest of the OaW fleet pins.
+          bun-version: 1.3.11
       - run: bun install --frozen-lockfile
       - run: bun run lint
 
@@ -20,5 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pin bun so setup-bun downloads the release asset directly instead of calling the
+          # GitHub API to resolve a floating version — that refs/tags call intermittently 503s
+          # and flaked this job (the "lint failing" run was a transient API 503, not a lint
+          # error; #35). Matches the bun version the rest of the OaW fleet pins.
+          bun-version: 1.3.11
       - run: bun install --frozen-lockfile
       - run: bun test
