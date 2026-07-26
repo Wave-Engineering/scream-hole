@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write # keyless cosign (Fulcio/Rekor) via the shared oaw-sign-image action
 
 env:
   # GHCR path hardcoded lowercase. The old form `ghcr.io/${{ github.repository }}`
@@ -78,11 +79,20 @@ jobs:
             type=semver,pattern={{version}}
 
       - name: Build and push (GHCR)
+        id: build
         uses: docker/build-push-action@v6
         with:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Sign the GHCR image (cosign keyless + SBOM)
+        # Consumer of cc-workflow's reusable oaw-sign-image action (fleet signing). Signs the
+        # immutable digest; the GHCR login above is active and id-token grants OIDC. Small
+        # image -> SBOM to rekor (action default), no TSA.
+        uses: wave-engineering/claudecode-workflow/.github/actions/oaw-sign-image@21f10ce601b9340b30fd6df0b4a2e4bd663fe249
+        with:
+          digest-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
 
       - name: Log in to Docker Hub
         # AFTER the build (see the note above): the OAT is only ever presented to docker.io
@@ -99,6 +109,13 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           while IFS= read -r r; do [ -n "$r" ] && docker buildx imagetools create --tag "docker.io/oakandwave/scream-hole:${r##*:}" "$r"; done <<< "$TAGS"
+
+      - name: Sign the Docker Hub image (cosign keyless + SBOM)
+        # Same digest as GHCR (imagetools copies content-identical); cosign sigs are
+        # registry+digest-bound so the mirror needs its own signature. Docker Hub login active.
+        uses: wave-engineering/claudecode-workflow/.github/actions/oaw-sign-image@21f10ce601b9340b30fd6df0b4a2e4bd663fe249
+        with:
+          digest-ref: docker.io/oakandwave/scream-hole@${{ steps.build.outputs.digest }}
 
       - name: Docker Scout — CVE scan the pushed image
         # Scans the actual image layers for known CVEs. Non-blocking; continue-on-error covers
