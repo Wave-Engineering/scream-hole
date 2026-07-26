@@ -24,9 +24,38 @@ jobs:
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
+          # `latest` is deliberately ABSENT here. Do not add it back.
+          #
+          # metadata-action defaults to `flavor: latest=auto` (src/flavor.ts
+          # Transform), which publishes `latest` for a stable semver tag and
+          # withholds it from a pre-release — see the action README's
+          # "Latest tag" section.
+          #
+          # An explicit `type=raw,value=latest` does NOT override that
+          # decision, it BYPASSES it. Under `auto`, procRaw hands `false`
+          # to setVersion (src/meta.ts):
+          #
+          #   Meta.setVersion(version, vraw,
+          #     this.flavor.latest == 'auto' ? false : ...)
+          #
+          # so a raw entry can never make `latest` true. What it does is
+          # emit the literal string `latest` as a tag of its own, on every
+          # v* ref — `v1.4.0-rc1` included. That is what
+          # `docker run ...:latest` would then serve, and README.md's Quick
+          # Start tells every reader to run exactly that.
+          #
+          # Stated precisely because the wrong mechanism mispredicts:
+          # `type=raw,value=latest,enable=false` would NOT suppress
+          # auto-latest (getVersion skips disabled entries and the flavor
+          # is untouched), and reordering this list changes nothing —
+          # entries are sorted by priority before evaluation, descending
+          # (src/tag.ts). See docker/metadata-action#593, which exists to
+          # document this exact distinction.
+          #
+          # Removing the line IS the fix (#33). The safe default was always
+          # in effect; the explicit entry bypassed it.
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
 
       - uses: docker/build-push-action@v6
         with:
