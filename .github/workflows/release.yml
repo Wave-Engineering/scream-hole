@@ -102,8 +102,8 @@ jobs:
   # here (a cosign or Hub flake) is recovered with "Re-run failed jobs": that re-runs this
   # job alone on the stored digest, the version tag already on it is skipped, and nothing is
   # rebuilt. Re-running the docker job would rebuild a new digest (a rebuild never
-  # reproduces one) and move GHCR's version tag, which Hub then refuses. So never "Re-run
-  # all jobs" once this job has pushed.
+  # reproduces one) and move GHCR's version tag, which Hub then refuses. So once this job has
+  # pushed, never re-run the docker job: not by "Re-run all jobs", and not by re-running it alone.
   mirror:
     needs: docker
     runs-on: ubuntu-latest
