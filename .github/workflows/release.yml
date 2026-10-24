@@ -18,6 +18,9 @@ env:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      release_refs: ${{ steps.mirror.outputs.release-refs }}
     steps:
       - uses: actions/checkout@v4
 
@@ -102,13 +105,16 @@ jobs:
           username: oakandwave
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Mirror GHCR tags to Docker Hub oakandwave
-        # Registry migration: copy the just-pushed GHCR tags to docker.io/oakandwave.
-        # imagetools copies cross-registry using each registry's own creds and rebuilds nothing.
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          while IFS= read -r r; do [ -n "$r" ] && docker buildx imagetools create --tag "docker.io/oakandwave/scream-hole:${r##*:}" "$r"; done <<< "$TAGS"
+      - name: Mirror the GHCR digest to Docker Hub oakandwave
+        # Shared oaw-mirror-image action (claudecode-workflow#1326): copies the exact digest
+        # under every tag, but pushes a version tag (X.Y.Z) only when it is absent, and fails
+        # with nothing pushed if one already names another digest. Rebuilds nothing.
+        id: mirror
+        uses: wave-engineering/claudecode-workflow/.github/actions/oaw-mirror-image@d82d57ba3553ea5f82d3267f7c1e98d944a07a3a
+        with:
+          source-digest-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          tags: ${{ steps.meta.outputs.tags }}
+          dest-image: docker.io/oakandwave/scream-hole
 
       - name: Sign the Docker Hub image (cosign keyless + SBOM)
         # Same digest as GHCR (imagetools copies content-identical); cosign sigs are
@@ -128,3 +134,23 @@ jobs:
           image: docker.io/oakandwave/scream-hole:${{ steps.meta.outputs.version }}
           only-severities: critical,high
           write-comment: false
+
+  # Write the image's digest-pinned refs into the GitHub release. Its own job, after the
+  # mirror and both signatures, so a release-API failure can't stop a signature, and
+  # contents: write sits on a job that runs no registry or signing tooling.
+  release-notes:
+    needs: docker
+    runs-on: ubuntu-latest
+    # Its own block replaces the workflow-level one: no packages or id-token here.
+    permissions:
+      contents: write
+    steps:
+      - name: Write the image digest into the release
+        # Releases here are written after CI, so a missing one is created (generated notes);
+        # an existing one gets the Images block appended, or replaced on a rerun.
+        uses: wave-engineering/claudecode-workflow/.github/actions/oaw-release-images@d82d57ba3553ea5f82d3267f7c1e98d944a07a3a
+        with:
+          release-tag: ${{ github.ref_name }}
+          release-refs: ${{ needs.docker.outputs.release_refs }}
+          source-digest-ref: ${{ env.IMAGE }}@${{ needs.docker.outputs.digest }}
+          create-if-missing: "true"
